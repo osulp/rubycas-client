@@ -113,6 +113,9 @@ module CASClient
     end
 
     def validate_service_ticket(st)
+      if validate_url.include? "saml"
+        return validate_saml_ticket(st)
+      end
       uri = URI.parse(validate_url)
       h = uri.query ? query_to_hash(uri.query) : {}
       h['service'] = st.service
@@ -132,6 +135,32 @@ module CASClient
       return st
     end
     alias validate_proxy_ticket validate_service_ticket
+
+    def validate_saml_ticket(st)
+      uri = URI.parse(validate_url)
+      h = uri.query ? query_to_hash(uri.query) : {}
+      h['TARGET'] = st.service
+      uri.query = hash_to_query(h)
+
+      xml = '<?xml version="1.0"?>
+      <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+        <SOAP-ENV:Header/>
+        <SOAP-ENV:Body>
+          <samlp:Request xmlns:samlp="urn:oasis:names:tc:SAML:1.0:protocol"
+                         MajorVersion="1"
+                         MinorVersion="1"
+                         RequestID="_127.0.0.1.%d"
+                         IssueInstant="%s">
+            <samlp:AssertionArtifact>%s</samlp:AssertionArtifact>
+          </samlp:Request>
+        </SOAP-ENV:Body>
+      </SOAP-ENV:Envelope>'
+      request = format(xml, Time.now.to_i, Time.now.iso8601, st.ticket)
+
+      st.response = request_cas_response(uri, ValidationResponse, :data => request)
+
+      return st
+    end
 
     # Returns true if the configured CAS server is up and responding;
     # false otherwise.
@@ -241,12 +270,21 @@ module CASClient
     # Type should be either ValidationResponse or ProxyResponse.
     def request_cas_response(uri, type, options={})
       log.debug "Requesting CAS response for URI #{uri}"
-
+      data = options.delete(:data)
       uri = URI.parse(uri) unless uri.kind_of? URI
       https = https_connection(uri)
+      if data
+        req = Net::HTTP::Post.new(uri.path)
+        req.set_content_type 'text/xml'
+        req.body = data
+      end
       begin
         raw_res = https.start do |conn|
-          conn.get("#{uri.path}?#{uri.query}")
+          unless data
+            conn.get("#{uri.path}?#{uri.query}")
+          else
+            conn.request(req)
+          end
         end
       rescue Errno::ECONNREFUSED => e
         log.error "CAS server did not respond! (#{e.inspect})"
