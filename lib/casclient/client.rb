@@ -274,7 +274,7 @@ module CASClient
       uri = URI.parse(uri) unless uri.kind_of? URI
       https = https_connection(uri)
       if data
-        req = Net::HTTP::Post.new(uri.path)
+        req = Net::HTTP::Post.new("#{uri.path}?#{uri.query}")
         req.set_content_type 'text/xml'
         req.body = data
       end
