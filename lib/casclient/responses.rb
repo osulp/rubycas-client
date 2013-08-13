@@ -14,7 +14,7 @@ module CASClient
       if doc.elements && doc.elements["cas:serviceResponse"]
         return 2.0, doc.elements["cas:serviceResponse"].elements[1]
       elsif doc.elements && doc.elements["SOAP-ENV:Envelope"]
-        return 3.0, doc.elements["saml1p:Response"]
+        return 3.0, doc.elements["//saml1p:Response"]
       else
         raise BadResponseException,
           "This does not appear to be a valid CAS response (missing cas:serviceResponse root element)!\nXML DOC:\n#{doc.to_s}"
@@ -53,7 +53,7 @@ module CASClient
       @protocol, @xml = check_and_parse_xml(raw_text)
 
       if is_success?
-        cas_user = @protocol == 2.0 ? @xml.elements["cas:user"] : @xml.elements["saml1:NameIdentifier"]
+        cas_user = @protocol == 2.0 ? @xml.elements["cas:user"] : @xml.elements["//saml1:NameIdentifier"]
         @user = cas_user.text.strip if cas_user
         @pgt_iou =  @xml.elements["cas:proxyGrantingTicket"].text.strip if @xml.elements["cas:proxyGrantingTicket"]
 
@@ -77,9 +77,9 @@ module CASClient
         end
 
         # SAML Extra Attributes
-        @xml.elements.to_a('saml1:Attribute').each do |el|
+        @xml.elements.to_a('//saml1:Attribute').each do |el|
           key = el.attributes["AttributeName"]
-          @extra_attributes[key] = el["saml1:AttributeValue"].text
+          @extra_attributes[key] = el.elements["saml1:AttributeValue"].text
         end
 
         # unserialize extra attributes
