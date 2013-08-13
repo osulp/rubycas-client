@@ -157,7 +157,13 @@ module CASClient
       </SOAP-ENV:Envelope>'
       request = format(xml, Time.now.to_i, Time.now.iso8601, st.ticket)
 
-      st.response = request_cas_response(uri, ValidationResponse, :data => request)
+      response = request_cas_response(uri, ValidationResponse, :data => request)
+      st.user = response.user
+      st.extra_attributes = response.extra_attributes
+      st.pgt_iou = response.pgt_iou
+      st.success = response.is_success?
+      st.failure_code = response.failure_code
+      st.failure_message = response.failure_message
 
       return st
     end
