@@ -87,8 +87,13 @@ module CASClient
           @extra_attributes[k] = parse_extra_attribute_value(v, options[:encode_extra_attributes_as])
         end
       elsif is_failure?
-        @failure_code = @xml.elements['//cas:authenticationFailure'].attributes['code']
-        @failure_message = @xml.elements['//cas:authenticationFailure'].text.strip
+        if protocol == 2
+          @failure_code = @xml.elements['//cas:authenticationFailure'].attributes['code']
+          @failure_message = @xml.elements['//cas:authenticationFailure'].text.strip
+        else
+          @failure_code = 0
+          @failure_message = @xml.elements['//saml1p:StatusMessage'].text.strip
+        end
       else
         # this should never happen, since the response should already have been recognized as invalid
         raise BadResponseException, "BAD CAS RESPONSE:\n#{raw_text.inspect}\n\nXML DOC:\n#{doc.inspect}"
@@ -126,11 +131,15 @@ module CASClient
     end
 
     def is_success?
-      (instance_variable_defined?(:@valid) &&  @valid) || (protocol > 1.0 && xml.name == "authenticationSuccess")
+      (instance_variable_defined?(:@valid) &&  @valid) ||
+          (protocol == 2 && xml.name == "authenticationSuccess") ||
+          (protocol == 3 && xml.elements["//saml1p:StatusCode"].attributes["Value"] == "saml1p:Success")
     end
 
     def is_failure?
-      (instance_variable_defined?(:@valid) && !@valid) || (protocol > 1.0 && xml.name == "authenticationFailure" )
+      (instance_variable_defined?(:@valid) && !@valid) ||
+          (protocol == 2 && xml.name == "authenticationFailure" ) ||
+          (protocol == 3 && xml.elements["//saml1p:StatusCode"].attributes["Value"] != "saml1p:Success")
     end
   end
 
@@ -165,7 +174,7 @@ module CASClient
     end
 
     def is_success?
-      xml.name == "proxySuccess"
+      xml.name == "proxySuccess" || xml.name == "Response"
     end
 
     def is_failure?
