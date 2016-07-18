@@ -7,12 +7,16 @@ module CASClient
       begin
         doc = REXML::Document.new(raw_xml, :raw => :all)
       rescue REXML::ParseException => e
-        raise BadResponseException, 
+        raise BadResponseException,
           "MALFORMED CAS RESPONSE:\n#{raw_xml.inspect}\n\nEXCEPTION:\n#{e}"
       end
 
-      unless doc.elements && doc.elements["cas:serviceResponse"]
-        raise BadResponseException, 
+      if doc.elements && doc.elements["cas:serviceResponse"]
+        return 2.0, doc.elements["cas:serviceResponse"].elements[1]
+      elsif doc.elements && doc.elements["SOAP-ENV:Envelope"]
+        return 3.0, doc.elements["//saml1p:Response"]
+      else
+        raise BadResponseException,
           "This does not appear to be a valid CAS response (missing cas:serviceResponse root element)!\nXML DOC:\n#{doc.to_s}"
       end
 
@@ -36,7 +40,7 @@ module CASClient
     end
 
     def parse(raw_text, options)
-      raise BadResponseException, 
+      raise BadResponseException,
         "CAS response is empty/blank." if raw_text.blank?
       @parse_datetime = Time.now
       if raw_text =~ /^(yes|no)\n(.*?)\n$/m
@@ -46,13 +50,10 @@ module CASClient
         return
       end
 
-      @xml = check_and_parse_xml(raw_text)
-
-      # if we got this far then we've got a valid XML response, so we're doing CAS 2.0
-      @protocol = 2.0
+      @protocol, @xml = check_and_parse_xml(raw_text)
 
       if is_success?
-        cas_user = @xml.elements["cas:user"]
+        cas_user = @protocol == 2.0 ? @xml.elements["cas:user"] : @xml.elements["//saml1:NameIdentifier"]
         @user = cas_user.text.strip if cas_user
         @pgt_iou =  @xml.elements["cas:proxyGrantingTicket"].text.strip if @xml.elements["cas:proxyGrantingTicket"]
 
@@ -75,13 +76,24 @@ module CASClient
           @extra_attributes.merge! name => inner_text
         end
 
+        # SAML Extra Attributes
+        @xml.elements.to_a('//saml1:Attribute').each do |el|
+          key = el.attributes["AttributeName"]
+          @extra_attributes[key] = el.elements["saml1:AttributeValue"].text
+        end
+
         # unserialize extra attributes
         @extra_attributes.each do |k, v|
           @extra_attributes[k] = parse_extra_attribute_value(v, options[:encode_extra_attributes_as])
         end
       elsif is_failure?
-        @failure_code = @xml.elements['//cas:authenticationFailure'].attributes['code']
-        @failure_message = @xml.elements['//cas:authenticationFailure'].text.strip
+        if protocol == 2
+          @failure_code = @xml.elements['//cas:authenticationFailure'].attributes['code']
+          @failure_message = @xml.elements['//cas:authenticationFailure'].text.strip
+        else
+          @failure_code = 0
+          @failure_message = @xml.elements['//saml1p:StatusMessage'].text.strip
+        end
       else
         # this should never happen, since the response should already have been recognized as invalid
         raise BadResponseException, "BAD CAS RESPONSE:\n#{raw_text.inspect}\n\nXML DOC:\n#{doc.inspect}"
@@ -119,15 +131,19 @@ module CASClient
     end
 
     def is_success?
-      (instance_variable_defined?(:@valid) &&  @valid) || (protocol > 1.0 && xml.name == "authenticationSuccess")
+      (instance_variable_defined?(:@valid) &&  @valid) ||
+          (protocol == 2 && xml.name == "authenticationSuccess") ||
+          (protocol == 3 && xml.elements["//saml1p:StatusCode"].attributes["Value"] == "saml1p:Success")
     end
 
     def is_failure?
-      (instance_variable_defined?(:@valid) && !@valid) || (protocol > 1.0 && xml.name == "authenticationFailure" )
+      (instance_variable_defined?(:@valid) && !@valid) ||
+          (protocol == 2 && xml.name == "authenticationFailure" ) ||
+          (protocol == 3 && xml.elements["//saml1p:StatusCode"].attributes["Value"] != "saml1p:Success")
     end
   end
 
-  # Represents a response from the CAS server to a proxy ticket request 
+  # Represents a response from the CAS server to a proxy ticket request
   # (i.e. after requesting a proxy ticket).
   class ProxyResponse
     include XmlResponse
@@ -139,7 +155,7 @@ module CASClient
     end
 
     def parse(raw_text)
-      raise BadResponseException, 
+      raise BadResponseException,
         "CAS response is empty/blank." if raw_text.blank?
       @parse_datetime = Time.now
 
@@ -158,7 +174,7 @@ module CASClient
     end
 
     def is_success?
-      xml.name == "proxySuccess"
+      xml.name == "proxySuccess" || xml.name == "Response"
     end
 
     def is_failure?
@@ -166,7 +182,7 @@ module CASClient
     end
   end
 
-  # Represents a response from the CAS server to a login request 
+  # Represents a response from the CAS server to a login request
   # (i.e. after submitting a username/password).
   class LoginResponse
     attr_reader :tgt, :ticket, :service_redirect_url
@@ -180,8 +196,8 @@ module CASClient
       header = http_response.to_hash
 
       # FIXME: this regexp might be incorrect...
-      if header['set-cookie'] && 
-        header['set-cookie'].first && 
+      if header['set-cookie'] &&
+        header['set-cookie'].first &&
         header['set-cookie'].first =~ /tgt=([^&]+);/
         @tgt = $~[1]
       end
@@ -190,14 +206,14 @@ module CASClient
       if location =~ /ticket=([^&]+)/
         @ticket = $~[1]
       end
-      
+
       # Legacy check. CAS Server used to return a 200 (Success) or a 302 (Found) on successful authentication.
       # This behavior should be deprecated at some point in the future.
       legacy_valid_ticket = (http_response.kind_of?(Net::HTTPSuccess) || http_response.kind_of?(Net::HTTPFound)) && @ticket.present?
-      
+
       # If using rubycas-server 1.1.0+
       valid_ticket = http_response.kind_of?(Net::HTTPSeeOther) && @ticket.present?
-      
+
       if !legacy_valid_ticket && !valid_ticket
         @failure = true
         # Try to extract the error message -- this only works with RubyCAS-Server.
